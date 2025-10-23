@@ -4,6 +4,43 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Video Snippets Player</title>
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://codex-orange.github.io/VideoSnippets/">
+    <meta property="og:title" content="Video Snippets Player">
+    <meta property="og:description" content="Play selected YouTube video snippets">
+    <meta property="og:image" content="https://codex-orange.github.io/VideoSnippets/thumbnail.svg">
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:url" content="https://codex-orange.github.io/VideoSnippets/">
+    <meta name="twitter:title" content="Video Snippets Player">
+    <meta name="twitter:description" content="Play selected YouTube video snippets">
+    <meta name="twitter:image" content="https://codex-orange.github.io/VideoSnippets/thumbnail.svg">
+
+    <script>
+        // Update meta tags dynamically based on URL parameters
+        (function() {
+            const params = new URLSearchParams(window.location.search);
+            const videoId = params.get('videoId');
+
+            if (videoId) {
+                // Use YouTube's thumbnail as the og:image
+                const thumbnailUrl = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+                const currentUrl = window.location.href;
+
+                // Update Open Graph meta tags
+                document.querySelector('meta[property="og:image"]').setAttribute('content', thumbnailUrl);
+                document.querySelector('meta[property="og:url"]').setAttribute('content', currentUrl);
+
+                // Update Twitter meta tags
+                document.querySelector('meta[name="twitter:image"]').setAttribute('content', thumbnailUrl);
+                document.querySelector('meta[name="twitter:url"]').setAttribute('content', currentUrl);
+            }
+        })();
+    </script>
+
     <style>
         * {
             margin: 0;
