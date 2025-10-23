@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Snippets Player</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            overflow: hidden;
+        }
+
+        #player-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+            background: #000;
+        }
+
+        #player {
+            width: 100%;
+            height: 100%;
+        }
+
+        #controls {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .control-btn {
+            min-width: 44px;
+            min-height: 44px;
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background 0.2s;
+        }
+
+        .control-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .control-btn:active {
+            background: rgba(255, 255, 255, 0.4);
+        }
+
+        .error-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            flex-direction: column;
+            font-family: sans-serif;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .error-container h1 {
+            color: #d32f2f;
+            margin-bottom: 15px;
+            font-size: 24px;
+        }
+
+        .error-container p {
+            color: #333;
+            line-height: 1.6;
+            max-width: 600px;
+        }
+
+        .error-container code {
+            background: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+
+        #loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-size: 18px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Loading player...</div>
+
+    <script>
+        // Global state
+        let player;
+        let segments = [];
+        let currentSegmentIndex = 0;
+        let isProcessing = false;
+        let videoDuration = 0;
+
+        // Parse URL parameters
+        const params = new URLSearchParams(window.location.search);
+        const videoId = params.get('videoId');
+        const snippetsParam = params.get('snippets');
+
+        // Error handling function
+        function showError(title, message) {
+            document.body.innerHTML = `
+                <div class="error-container">
+                    <h1>${title}</h1>
+                    <p>${message}</p>
+                </div>
+            `;
+        }
+
+        // Validate required parameters
+        if (!videoId) {
+            showError(
+                'Error: Missing Video ID',
+                'Please provide a videoId parameter in the URL.<br>Example: ?videoId=dQw4w9WgXcQ&snippets=0:00-1:30'
+            );
+            throw new Error('Missing videoId');
+        }
+
+        if (!snippetsParam) {
+            showError(
+                'Error: Missing Snippets',
+                'Please provide a snippets parameter in the URL.<br>Example: ?videoId=dQw4w9WgXcQ&snippets=0:00-1:30,2:00-3:00'
+            );
+            throw new Error('Missing snippets');
+        }
+
+        // Parse timestamp to seconds
+        function parseTimestamp(timestamp, isEnd = false) {
+            timestamp = timestamp.trim();
+
+            // Handle special keywords
+            if (timestamp === 'start') {
+                return 0;
+            }
+            if (timestamp === 'end') {
+                // Will be resolved later after video loads
+                return -1;
+            }
+
+            // Validate format: must contain colon(s)
+            if (!timestamp.includes(':')) {
+                throw new Error(`Invalid timestamp format: "${timestamp}"`);
+            }
+
+            const parts = timestamp.split(':');
+            if (parts.length < 2 || parts.length > 3) {
+                throw new Error(`Invalid timestamp format: "${timestamp}"`);
+            }
+
+            let hours = 0, minutes = 0, seconds = 0;
+
+            if (parts.length === 3) {
+                // H:MM:SS format
+                hours = parseInt(parts[0], 10);
+                minutes = parseInt(parts[1], 10);
+                seconds = parseInt(parts[2], 10);
+            } else {
+                // M:SS format
+                minutes = parseInt(parts[0], 10);
+                seconds = parseInt(parts[1], 10);
+            }
+
+            // Validate all parts are numbers
+            if (isNaN(hours) || isNaN(minutes) || isNaN(seconds)) {
+                throw new Error(`Invalid timestamp: "${timestamp}"`);
+            }
+
+            // Validate seconds are two digits
+            const secondsPart = parts[parts.length - 1];
+            if (secondsPart.length !== 2) {
+                throw new Error(`Invalid timestamp: "${timestamp}" - seconds must be two digits`);
+            }
+
+            // Validate seconds range
+            if (seconds < 0 || seconds > 59) {
+                throw new Error(`Invalid timestamp: "${timestamp}" - seconds must be 00-59`);
+            }
+
+            return hours * 3600 + minutes * 60 + seconds;
+        }
+
+        // Parse snippets parameter
+        function parseSnippets(snippetsStr) {
+            const snippetPairs = snippetsStr.split(',').map(s => s.trim());
+            const parsed = [];
+
+            for (const snippet of snippetPairs) {
+                if (!snippet.includes('-')) {
+                    showError(
+                        'Error: Invalid Snippet Format',
+                        `Snippet "<code>${snippet}</code>" is not valid.<br>Use format: M:SS-M:SS (example: 1:30-2:45)`
+                    );
+                    throw new Error(`Invalid snippet format: ${snippet}`);
+                }
+
+                const [startStr, endStr] = snippet.split('-').map(s => s.trim());
+
+                if (!startStr || !endStr) {
+                    showError(
+                        'Error: Invalid Snippet Format',
+                        `Snippet "<code>${snippet}</code>" is not valid.<br>Use format: M:SS-M:SS (example: 1:30-2:45)`
+                    );
+                    throw new Error(`Invalid snippet format: ${snippet}`);
+                }
+
+                try {
+                    const start = parseTimestamp(startStr, false);
+                    const end = parseTimestamp(endStr, true);
+
+                    parsed.push({ start, end, original: snippet });
+                } catch (e) {
+                    showError(
+                        'Error: Invalid Timestamp',
+                        `Timestamp error in snippet "<code>${snippet}</code>":<br>${e.message}<br><br>Use format: M:SS or MM:SS or H:MM:SS`
+                    );
+                    throw e;
+                }
+            }
+
+            return parsed;
+        }
+
+        // Resolve "end" keywords after video loads
+        function resolveEndKeywords(segments, duration) {
+            return segments.map(seg => ({
+                start: seg.start,
+                end: seg.end === -1 ? duration : seg.end,
+                original: seg.original
+            }));
+        }
+
+        // Validate snippets for overlaps and duplicates
+        function validateSnippets(segments) {
+            // Check for duplicates
+            const seen = new Set();
+            for (const seg of segments) {
+                const key = `${seg.start}-${seg.end}`;
+                if (seen.has(key)) {
+                    showError(
+                        'Error: Duplicate Snippet',
+                        `The snippet "<code>${seg.original}</code>" appears multiple times.<br>Please remove duplicate snippets from the URL.`
+                    );
+                    throw new Error('Duplicate snippet detected');
+                }
+                seen.add(key);
+            }
+
+            // Check for overlaps
+            for (let i = 0; i < segments.length; i++) {
+                for (let j = i + 1; j < segments.length; j++) {
+                    const seg1 = segments[i];
+                    const seg2 = segments[j];
+
+                    // Check if segments overlap
+                    const overlap = (seg1.start < seg2.end && seg2.start < seg1.end);
+                    if (overlap) {
+                        showError(
+                            'Error: Overlapping Snippets',
+                            `The snippets "<code>${seg1.original}</code>" and "<code>${seg2.original}</code>" overlap.<br>Please ensure all snippets have distinct time ranges.`
+                        );
+                        throw new Error('Overlapping snippets detected');
+                    }
+                }
+            }
+
+            // Validate start < end for each segment
+            for (const seg of segments) {
+                if (seg.start >= seg.end) {
+                    showError(
+                        'Error: Invalid Time Range',
+                        `The snippet "<code>${seg.original}</code>" has an invalid time range.<br>Start time must be before end time.`
+                    );
+                    throw new Error('Invalid time range');
+                }
+            }
+        }
+
+        // Parse and validate snippets
+        try {
+            segments = parseSnippets(snippetsParam);
+        } catch (e) {
+            // Error already displayed
+            throw e;
+        }
+
+        // Load YouTube IFrame API
+        const tag = document.createElement('script');
+        tag.src = 'https://www.youtube.com/iframe_api';
+        const firstScriptTag = document.getElementsByTagName('script')[0];
+        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+
+        // YouTube API ready callback
+        window.onYouTubeIframeAPIReady = function() {
+            // Create player container
+            document.body.innerHTML = `
+                <div id="player-container">
+                    <div id="player"></div>
+                    <div id="controls">
+                        <button class="control-btn" id="playPauseBtn">Pause</button>
+                        <button class="control-btn" id="back10Btn">Back 10s</button>
+                        <button class="control-btn" id="forward10Btn">Forward 10s</button>
+                        <button class="control-btn" id="replayBtn">Replay</button>
+                    </div>
+                </div>
+            `;
+
+            player = new YT.Player('player', {
+                height: '100%',
+                width: '100%',
+                videoId: videoId,
+                playerVars: {
+                    autoplay: 1,
+                    controls: 1,
+                    rel: 0,
+                    modestbranding: 1
+                },
+                events: {
+                    onReady: onPlayerReady,
+                    onStateChange: onPlayerStateChange,
+                    onError: onPlayerError
+                }
+            });
+
+            // Setup control buttons
+            setupControls();
+        };
+
+        function onPlayerReady(event) {
+            // Get video duration
+            videoDuration = player.getDuration();
+
+            // Resolve "end" keywords
+            segments = resolveEndKeywords(segments, videoDuration);
+
+            // Validate snippets after resolving "end"
+            try {
+                validateSnippets(segments);
+            } catch (e) {
+                // Error already displayed
+                return;
+            }
+
+            // Start playing first segment
+            playSegment(0);
+        }
+
+        function onPlayerStateChange(event) {
+            // Update play/pause button
+            const playPauseBtn = document.getElementById('playPauseBtn');
+            if (event.data === YT.PlayerState.PLAYING) {
+                playPauseBtn.textContent = 'Pause';
+            } else if (event.data === YT.PlayerState.PAUSED) {
+                playPauseBtn.textContent = 'Play';
+            }
+
+            // Check if segment has ended
+            if (event.data === YT.PlayerState.PLAYING) {
+                checkSegmentProgress();
+            }
+        }
+
+        function onPlayerError(event) {
+            showError(
+                'Error: Video Not Available',
+                `This video cannot be played. It may be private, deleted, or restricted.<br>Video ID: <code>${videoId}</code>`
+            );
+        }
+
+        function playSegment(index) {
+            if (index < 0 || index >= segments.length) {
+                return;
+            }
+
+            currentSegmentIndex = index;
+            const segment = segments[index];
+
+            player.loadVideoById({
+                videoId: videoId,
+                startSeconds: segment.start,
+                endSeconds: segment.end
+            });
+        }
+
+        function checkSegmentProgress() {
+            if (isProcessing) {
+                return;
+            }
+
+            const checkInterval = setInterval(() => {
+                if (!player || !player.getCurrentTime) {
+                    clearInterval(checkInterval);
+                    return;
+                }
+
+                const currentTime = player.getCurrentTime();
+                const segment = segments[currentSegmentIndex];
+
+                // Check if we've reached the end of the current segment
+                if (currentTime >= segment.end - 0.5) {
+                    clearInterval(checkInterval);
+
+                    isProcessing = true;
+
+                    // Move to next segment or stop
+                    if (currentSegmentIndex < segments.length - 1) {
+                        currentSegmentIndex++;
+                        playSegment(currentSegmentIndex);
+
+                        setTimeout(() => {
+                            isProcessing = false;
+                        }, 500);
+                    } else {
+                        // Last segment finished
+                        isProcessing = false;
+                    }
+                }
+
+                // Stop checking if video is paused
+                const state = player.getPlayerState();
+                if (state !== YT.PlayerState.PLAYING) {
+                    clearInterval(checkInterval);
+                }
+            }, 100);
+        }
+
+        function setupControls() {
+            // Play/Pause button
+            document.getElementById('playPauseBtn').addEventListener('click', () => {
+                const state = player.getPlayerState();
+                if (state === YT.PlayerState.PLAYING) {
+                    player.pauseVideo();
+                } else {
+                    player.playVideo();
+                }
+            });
+
+            // Back 10 button
+            document.getElementById('back10Btn').addEventListener('click', () => {
+                const currentTime = player.getCurrentTime();
+                const segment = segments[currentSegmentIndex];
+                const newTime = Math.max(segment.start, currentTime - 10);
+                player.seekTo(newTime, true);
+            });
+
+            // Forward 10 button
+            document.getElementById('forward10Btn').addEventListener('click', () => {
+                const currentTime = player.getCurrentTime();
+                const segment = segments[currentSegmentIndex];
+
+                // If within 10 seconds of end, go to next segment
+                if (currentTime >= segment.end - 10) {
+                    if (currentSegmentIndex < segments.length - 1) {
+                        currentSegmentIndex++;
+                        playSegment(currentSegmentIndex);
+                    } else {
+                        // Last segment, just seek to end
+                        player.seekTo(segment.end, true);
+                    }
+                } else {
+                    const newTime = Math.min(segment.end, currentTime + 10);
+                    player.seekTo(newTime, true);
+                }
+            });
+
+            // Replay button
+            document.getElementById('replayBtn').addEventListener('click', () => {
+                currentSegmentIndex = 0;
+                playSegment(0);
+            });
+        }
+    </script>
+</body>
+</html>
